@@ -1,0 +1,48 @@
+# plmap configuration -- one file per map. Relative paths are relative to this file.
+# Run:   plmap spectra config.yaml   (steps 1-2, needs only numpy + matplotlib)
+#        plmap run config.yaml       (steps 1-4, also needs scipy + plotly)
+
+data:
+  folder: /path/to/map_folder          # contains 1_loc1.txt ... 1_locN.txt
+  wavelength_file: /path/to/wavelength.txt   # one wavelength (nm) per line, line i <-> spectral line i
+  prefix: null                         # run number before "_loc" (auto if the folder has only one run)
+  output: null                         # default: <folder>/plmap_output
+
+scan:                                  # one-directional raster: x = fast axis, y = slow axis
+  x_start: 0.2600                      # stage coordinates as entered for the scan
+  x_end: 0.3000
+  x_steps: 40                          # 40 steps = 41 points
+  y_start: 0.2500
+  y_end: 0.2900
+  y_steps: 40
+  units: mm                            # mm | um   (maps are drawn in µm)
+  flip_x: false                        # draw mirrored left-right (real-space view)
+
+spectra:
+  cosmic_ray_sigma: 6                  # reject cosmic rays in each CCD row before averaging (null = off)
+  despike_sigma: 8                     # remove leftover single-line spikes (null = off)
+  plots: all                           # per-file spectrum plots: all | none | [1, 25, 841]
+  plot_dpi: 100
+
+background:
+  dark_file: null                      # optional dark spectrum (loc-style matrix, 1 column, or wavelength+counts)
+  offset_region_nm: null               # signal-free band for per-point offset, e.g. [760, 768]; null = red-most 8 nm; none = off
+  substrate: auto                      # auto = mean of the dimmest points | none | path to a substrate spectrum
+  substrate_fraction: 0.3              # fraction of dimmest points used for "auto"
+
+fit:
+  range_nm: [700, 760]                 # wavelength range used for fitting (null = everything)
+  baseline: linear                     # none | constant | linear, fitted with the peaks
+  min_snr: 5                           # peak height / residual noise needed for a "good" fit
+  workers: auto                        # parallel fitting processes (auto = CPUs, max 8; 1 = off)
+  plots: none                          # per-file fit plots: all | none | list of loc indices
+  auto_detect: true                    # if peaks is empty, detect them on the mean bright spectrum
+  max_peaks: 4
+  peaks:                               # shape: lorentzian | gaussian | voigt
+    - {name: X0, center_nm: 710.5, shape: lorentzian, window_nm: 3, fwhm_meV: 6}
+    - {name: XT, center_nm: 723.0, shape: lorentzian, window_nm: 3, fwhm_meV: 8}
+    # optional per peak: min_fwhm_meV (default 0.5), max_fwhm_meV (default 80)
+
+report:
+  title: null                          # default: folder name
+  spectral_binning: 1                  # >1 averages neighbouring lines in the HTML only (smaller file)

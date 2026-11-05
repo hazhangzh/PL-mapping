@@ -1,0 +1,5 @@
+numpy>=1.22
+matplotlib>=3.5
+pyyaml
+scipy>=1.7     # steps 3-4 (fitting)
+plotly>=5      # step 4 (HTML report; only its bundled plotly.js is used)

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plmap"
+version = "0.1.0"
+description = "Processing of hyperspectral PL maps from the Andor spectrometer"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22", "matplotlib>=3.5", "pyyaml"]
+
+[project.optional-dependencies]
+fit = ["scipy>=1.7", "plotly>=5"]
+test = ["pytest", "scipy>=1.7", "plotly>=5"]
+
+[project.scripts]
+plmap = "plmap.cli:main"
+
+[tool.setuptools]
+packages = ["plmap"]
+
+[tool.setuptools.package-data]
+plmap = ["config_template.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
