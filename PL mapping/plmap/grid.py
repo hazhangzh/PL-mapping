@@ -63,11 +63,12 @@ class ScanGrid:
         return self.y_start + np.arange(self.ny) * self.y_step
 
     def x_rel_um(self):
-        """Distance from the scan start along x, in µm (always >= 0)."""
-        return np.arange(self.nx) * abs(self.x_step) * self.to_um
+        """Stage x minus the scan start, in µm: the start point is at 0 (a pure
+        translation, so a scan towards smaller stage values gives negative x)."""
+        return np.arange(self.nx) * self.x_step * self.to_um
 
     def y_rel_um(self):
-        return np.arange(self.ny) * abs(self.y_step) * self.to_um
+        return np.arange(self.ny) * self.y_step * self.to_um
 
     def describe(self):
         u = self.units

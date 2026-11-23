@@ -51,6 +51,15 @@ def write(path, cfg, grid, wl, spectra, present, bg, fit, prefix, log=print):
                                 "v": _clean(res[f"{n}_{q}"]), "peak": n,
                                 "cmap": {"center_nm": "RdBu", "center_meV": "RdBu", "fwhm_meV": "Viridis",
                                          "fwhm_nm": "Viridis"}.get(q, "Inferno")}
+        if p["shape"] == "trion":
+            maps[f"{n}_tail_meV"] = {"label": f"{n}: {LABELS['tail_meV']}", "group": f"Peak {n} ({p['shape']})",
+                                     "v": _clean(res[f"{n}_tail_meV"]), "peak": n, "cmap": "Viridis"}
+    for c in fit.get("combined", []):
+        maps[c["name"]] = {"label": f"{c['name']}: {c['label']}", "group": "Combined (fit.combined)",
+                           "v": _clean(res[c["name"]]), "peak": c["name"],
+                           "cmap": "Viridis" if c["kind"] == "ratio" else "RdBu"}
+    maps["shift_meV"] = {"label": "Rigid shift of the whole peak pattern (meV)", "group": "General",
+                         "v": _clean(res["shift_meV"]), "peak": None, "cmap": "RdBu"}
     maps["r2"] = {"label": "Fit R²", "group": "Fit quality", "v": _clean(res["r2"]), "peak": None, "cmap": "Viridis"}
     maps["noise"] = {"label": "Residual noise (counts)", "group": "Fit quality", "v": _clean(res["noise"]),
                      "peak": None, "cmap": "Viridis"}
@@ -64,8 +73,9 @@ def write(path, cfg, grid, wl, spectra, present, bg, fit, prefix, log=print):
            "center_nm": p["center_nm"], "window_nm": p["window_nm"]}
           for p, s in zip(peaks, model.slices)]
     perpix = {f"{p['name']}_{q}": _clean(res[f"{p['name']}_{q}"]) for p in peaks
-              for q in DERIVED + ("center_nm_err", "fwhm_meV_err", "intensity_err")}
+              for q in DERIVED + ("center_nm_err", "fwhm_meV_err", "intensity_err", "tail_meV_err")}
     perpix.update({f"{p['name']}_ok": [bool(x) for x in res[f"{p['name']}_ok"]] for p in peaks})
+    perpix.update({f"{c['name']}_ok": [bool(x) for x in res[c["name"] + "_ok"]] for c in fit.get("combined", [])})
     mean = fit["mean"]
     data = {
         "title": cfg["report"]["title"] or os.path.basename(os.path.normpath(cfg["data"]["folder"])),
@@ -80,6 +90,8 @@ def write(path, cfg, grid, wl, spectra, present, bg, fit, prefix, log=print):
         "raw": _b64(_bin(raw, nb)), "offset": _clean(bg["offset"]),
         "substrate": _clean(_bin(bg["substrate"], nb)), "dark": _clean(_bin(dark, nb)),
         "fit_range": [float(wl[fm].min()), float(wl[fm].max())],
+        "range_lo": _clean(res["range_lo_nm"], 8), "range_hi": _clean(res["range_hi_nm"], 8),
+        "shift": _clean(res["shift_meV"], 4),
         "peaks": pk, "nbase": model.nbase, "Emid": model.Emid, "baseline": model.baseline,
         "theta": [_clean(t, 9) for t in fit["theta"]],
         "perpix": perpix, "r2": _clean(res["r2"]), "maps": maps,
@@ -87,7 +99,9 @@ def write(path, cfg, grid, wl, spectra, present, bg, fit, prefix, log=print):
                  "n": int(len(mean["points"])),
                  "derived": [{k: (bool(v) if isinstance(v, (bool, np.bool_)) else _clean([v])[0])
                               for k, v in d.items()} for d in mean["derived"]]},
-        "comparison": fit["comparison"], "min_snr": cfg["fit"]["min_snr"],
+        "comparison": {n: {s: (v if isinstance(v, str) else _clean([v])[0]) for s, v in c.items()}
+                       for n, c in fit["comparison"].items()},
+        "min_snr": cfg["fit"]["min_snr"],
         "faddeeva": {"L": L, "a": a.tolist()},
         "HC": HC,
     }
@@ -171,8 +185,10 @@ code{background:#f1f0ec;padding:1px 4px;border-radius:4px}
     <div>
       <table id="ctab"></table>
       <p class="hint">Reduced χ² (summed over the 5 brightest points) when each peak in turn is fitted as a
-      Lorentzian, Gaussian or Voigt (others unchanged), divided by the best of the three (1.000 = best).
-      Voigt always fits at least as well (one more parameter), so it is recommended only if it beats both others by more than 2 %. To change a lineshape, set
+      Lorentzian, Gaussian, Voigt or trion (Gaussian with an exponential low-energy recoil tail; others unchanged),
+      divided by the best (1.000 = best). Voigt and trion have one more parameter, so one of them is recommended only if it
+      beats both Lorentzian and Gaussian by more than 2 %. The mean spectrum is the average of the brightest points after
+      each was shifted onto the common peak pattern. To change a lineshape, set
       <code>shape:</code> for that peak in the config and run <code>plmap run config.yaml</code> again (a new <code>fit_*</code> folder is written).</p>
       <table id="mtab"></table>
     </div>
@@ -187,7 +203,8 @@ const NX = D.nx, NY = D.ny, NW = D.wl.length, HC = D.HC;
 function b64f32(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new Float32Array(u.buffer);}
 const RAW = b64f32(D.raw);
 const WL = D.wl, EN = WL.map(l=>HC/l);
-const fitIdx = WL.map((l,i)=>[l,i]).filter(([l])=>l>=D.fit_range[0]&&l<=D.fit_range[1]).map(([,i])=>i);
+function pixRange(i){return (D.range_lo[i]!==null&&D.range_hi[i]!==null)?[D.range_lo[i],D.range_hi[i]]:D.fit_range;}
+function fitIdxOf(i){const r=pixRange(i);return WL.map((l,j)=>[l,j]).filter(([l])=>l>=r[0]-1e-9&&l<=r[1]+1e-9).map(([,j])=>j);}
 
 // ---------- lineshapes (match plmap/lineshapes.py)
 const LN2 = Math.log(2), SQPI = Math.sqrt(Math.PI);
@@ -204,6 +221,8 @@ const SHAPE = {
   lorentzian:(x,t)=>{const g=t[2]/2;return t[1]*g/Math.PI/((x-t[0])**2+g*g);},
   gaussian:(x,t)=>{const s=t[2]/(2*Math.sqrt(2*LN2));return t[1]*Math.exp(-0.5*((x-t[0])/s)**2)/(s*Math.sqrt(2*Math.PI));},
   voigt:(x,t)=>{const s=t[2]/(2*Math.sqrt(2*LN2)), g=t[3]/2, r=s*Math.SQRT2;return t[1]*wRe((x-t[0])/r,g/r)/(s*Math.sqrt(2*Math.PI));},
+  trion:(x,t)=>{const s=t[2]/(2*Math.sqrt(2*LN2)), tau=t[3], u=t[0]-x, z=(s/tau-u/s)/Math.SQRT2, g=Math.exp(-0.5*(u/s)**2);
+    const v=z>=0?g*wRe(0,z):2*Math.exp(0.5*(s/tau)**2-u/tau)-g*wRe(0,-z);return t[1]*v/(2*tau);},
 };
 function evalFit(theta, xs){
   const nb=D.nbase, base=xs.map(x=>{let v=0;for(let j=0;j<nb;j++)v+=theta[theta.length-nb+j]*(x-D.Emid)**j;return v;});
@@ -282,6 +301,7 @@ function drawSpec(){
   tr.push({x:X,y:y,type:"scatter",mode:"lines",line:{color:"#8a8a8a",width:1},name:raw?"raw (mean over CCD rows)":"data (bkg-subtracted)"});
   const th=D.theta[i];
   let resid=null;
+  const fitIdx=fitIdxOf(i);
   if(!raw&&th&&th.every(t=>t!==null)){
     const xs=fitIdx.map(j=>EN[j]), f=evalFit(th,xs), XX=fitIdx.map(j=>X[j]);
     const pal=["#d62728","#1f77b4","#2ca02c","#9467bd","#ff7f0e","#17becf"];
@@ -293,17 +313,17 @@ function drawSpec(){
     resid={x:XX,y:fitIdx.map((j,k)=>y[j]-f.tot[k]),type:"scatter",mode:"lines",line:{color:"#555",width:0.8},name:"residual",xaxis:"x",yaxis:"y2",showlegend:false};
     tr.push(resid);
   }
-  const zoom=document.getElementById("fitonly").checked, fr=eV?[HC/D.fit_range[1],HC/D.fit_range[0]]:D.fit_range;
+  const pr=pixRange(i), zoom=document.getElementById("fitonly").checked, fr=eV?[HC/pr[1],HC/pr[0]]:pr;
   const lay={margin:{l:58,r:10,t:46,b:44},legend:{font:{size:11},orientation:"h",x:0,y:1.02,yanchor:"bottom"},
     xaxis:{title:{text:eV?"Energy (eV)":"Wavelength (nm)"},range:zoom?fr:null,autorange:!zoom,anchor:"y2"},
     yaxis:{title:{text:"Counts"},domain:resid?[0.3,1]:[0,1],zeroline:true,zerolinecolor:"#ccc"},
     yaxis2:{title:{text:"resid."},domain:[0,0.22],zeroline:true,zerolinecolor:"#bbb",visible:!!resid},
     shapes:[{type:"rect",xref:"x",yref:"paper",x0:fr[0],x1:fr[1],y0:0,y1:1,fillcolor:"rgba(31,78,140,0.05)",line:{width:0},layer:"below"}]};
   Plotly.react("spec",tr,lay,{responsive:true,displaylogo:false});
-  let h="<tr><th>peak</th><th>λ (nm)</th><th>E (meV)</th><th>FWHM (meV)</th><th>FWHM (nm)</th><th>intensity</th><th>height</th><th>SNR</th><th>fit</th></tr>";
+  let h=`<tr><th>peak <span class="hint">shift ${fmt(D.shift[i],2)} meV</span></th><th>λ (nm)</th><th>E (meV)</th><th>FWHM (meV)</th><th>tail (meV)</th><th>FWHM (nm)</th><th>intensity</th><th>height</th><th>SNR</th><th>fit</th></tr>`;
   for(const p of D.peaks){const g=k=>D.perpix[p.name+"_"+k][i], ok=g("ok");
     h+=`<tr><td>${p.name} <span class="hint">${p.shape}</span></td><td>${fmt(g("center_nm"),3)} ± ${fmt(g("center_nm_err"),3)}</td><td>${fmt(g("center_meV"),2)}</td>`+
-       `<td>${fmt(g("fwhm_meV"),2)} ± ${fmt(g("fwhm_meV_err"),2)}</td><td>${fmt(g("fwhm_nm"),3)}</td><td>${fmt(g("intensity"),0)}</td><td>${fmt(g("height"),1)}</td><td>${fmt(g("snr"),1)}</td>`+
+       `<td>${fmt(g("fwhm_meV"),2)} ± ${fmt(g("fwhm_meV_err"),2)}</td><td>${p.shape==="trion"?fmt(g("tail_meV"),2)+" ± "+fmt(g("tail_meV_err"),2):""}</td><td>${fmt(g("fwhm_nm"),3)}</td><td>${fmt(g("intensity"),0)}</td><td>${fmt(g("height"),1)}</td><td>${fmt(g("snr"),1)}</td>`+
        `<td class="${ok?"good":"bad"}">${ok?"good":"rejected"}</td></tr>`;}
   document.getElementById("ptab").innerHTML=h;
 }
@@ -315,8 +335,8 @@ function drawSpec(){
   D.peaks.forEach((p,k)=>tr.push({x:m.wl,y:f.comps[k].map((v,j)=>v+f.base[j]),mode:"lines",type:"scatter",line:{color:pal[k%6],width:1.4},name:`${p.name} (${p.shape})`}));
   tr.push({x:m.wl,y:f.tot,mode:"lines",type:"scatter",line:{color:"#111",width:1.6},name:"total fit"});
   Plotly.newPlot("meanplot",tr,{margin:{l:58,r:10,t:10,b:44},xaxis:{title:{text:"Wavelength (nm)"}},yaxis:{title:{text:"Counts (bkg-subtracted)"}},legend:{font:{size:11}}},{responsive:true,displaylogo:false});
-  let h="<tr><th>peak</th><th>Lorentzian</th><th>Gaussian</th><th>Voigt</th><th>recommended</th><th>used</th></tr>";
-  for(const p of D.peaks){const c=D.comparison[p.name];h+=`<tr><td>${p.name}</td>`+["lorentzian","gaussian","voigt"].map(s=>`<td${s===c.recommended?' class="good"':''}>${fmt(c[s],3)}</td>`).join("")+
+  let h="<tr><th>peak</th><th>Lorentzian</th><th>Gaussian</th><th>Voigt</th><th>trion (recoil)</th><th>recommended</th><th>used</th></tr>";
+  for(const p of D.peaks){const c=D.comparison[p.name];h+=`<tr><td>${p.name}</td>`+["lorentzian","gaussian","voigt","trion"].map(s=>`<td${s===c.recommended?' class="good"':''}>${fmt(c[s],3)}</td>`).join("")+
     `<td>${c.recommended}</td><td${c.recommended===p.shape?"":' class="bad"'}>${p.shape}</td></tr>`;}
   document.getElementById("ctab").innerHTML=h;
   let t="<tr><th>peak (mean spectrum)</th><th>λ (nm)</th><th>E (meV)</th><th>FWHM (meV)</th><th>intensity</th></tr>";

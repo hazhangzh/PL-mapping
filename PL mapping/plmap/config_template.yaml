@@ -1,6 +1,7 @@
 # plmap configuration -- one file per map. Relative paths are relative to this file.
-# Run:   plmap spectra config.yaml   (steps 1-2, needs only numpy + matplotlib)
-#        plmap run config.yaml       (steps 1-4, also needs scipy + plotly)
+# Run:   plmap spectra config.yaml   (PL steps 1-2, needs only numpy + matplotlib)
+#        plmap run config.yaml       (PL steps 1-4, also needs scipy + plotly)
+#        plmap rc config.yaml        (reflection-contrast map; uses data, scan, spectra, rc, report)
 
 data:
   folder: /path/to/map_folder          # contains 1_loc1.txt ... 1_locN.txt
@@ -9,13 +10,17 @@ data:
   output: null                         # default: <folder>/plmap_output
 
 scan:                                  # one-directional raster: x = fast axis, y = slow axis
-  x_start: 0.2600                      # stage coordinates as entered for the scan
-  x_end: 0.3000
-  x_steps: 40                          # 40 steps = 41 points
-  y_start: 0.2500
-  y_end: 0.2900
-  y_steps: 40
-  units: mm                            # mm | um   (maps are drawn in µm)
+  file: null                           # scan-parameter file; default: scan.txt in data.folder
+                                       #   (`plmap init` writes a template: start/end/points per axis
+                                       #   as in the scan program, plus exposure_s)
+  # ...or give the values here instead of a scan file:
+  # x_start: 3.108                     # stage coordinates as entered for the scan
+  # x_end: 3.128
+  # x_points: 41                       # 41 points = 40 steps (or x_steps: 40)
+  # y_start: -7.9785
+  # y_end: -7.9585
+  # y_points: 41
+  units: mm                            # mm | um. Maps are drawn in µm with the start point at (0, 0)
   flip_x: false                        # draw mirrored left-right (real-space view)
 
 spectra:
@@ -26,22 +31,68 @@ spectra:
 
 background:
   dark_file: null                      # optional dark spectrum (loc-style matrix, 1 column, or wavelength+counts)
-  offset_region_nm: null               # signal-free band for per-point offset, e.g. [760, 768]; null = red-most 8 nm; none = off
+  offset_region_nm: null               # signal-free band for per-point offset, e.g. [691.5, 699.5]; null = auto
+                                       #   (the 8-nm spectral edge, blue or red, that carries less PL); none = off
   substrate: auto                      # auto = mean of the dimmest points | none | path to a substrate spectrum
   substrate_fraction: 0.3              # fraction of dimmest points used for "auto"
 
 fit:
-  range_nm: [700, 760]                 # wavelength range used for fitting (null = everything)
-  baseline: linear                     # none | constant | linear, fitted with the peaks
-  min_snr: 5                           # peak height / residual noise needed for a "good" fit
+  range_nm: [700, 721]                 # FIXED wavelength range used for fitting (null = use range_meV, or
+                                       #   auto around X0 if auto-detecting)
+  range_meV: null                      # [lo, hi] fit range relative to the anchor peak, e.g. [-62, 15];
+                                       #   follows each point's shift (use with range_nm: null)
+  anchor: null                         # peak that offset_meV refers to (default: the one with offset 0)
+  anchor_search_nm: null               # [min, max] where the anchor may be; null = anywhere
+  track_shift: true                    # per point: find the rigid shift of the whole peak pattern, then
+                                       #   move the start values / centre windows (and range_meV) with it
+  max_shift_meV: 10                    # largest shift searched, relative to the brightest points
+  skip_no_signal: true                 # do not fit points where the peak pattern is absent (off-flake)
+  baseline: linear                     # none | constant | linear | quadratic, fitted with the peaks
+  min_snr: 4                           # peak height / residual noise needed for a "good" fit
+                                       #   (off-flake noise fits reach ~2 on real 30 s maps)
   workers: auto                        # parallel fitting processes (auto = CPUs, max 8; 1 = off)
   plots: none                          # per-file fit plots: all | none | list of loc indices
-  auto_detect: true                    # if peaks is empty, detect them on the mean bright spectrum
+  auto_detect: main                    # if peaks is empty: main = only the main (highest-energy) exciton,
+                                       #   all = up to max_peaks peaks; detected on the mean bright spectrum
   max_peaks: 4
-  peaks:                               # shape: lorentzian | gaussian | voigt
-    - {name: X0, center_nm: 710.5, shape: lorentzian, window_nm: 3, fwhm_meV: 6}
-    - {name: XT, center_nm: 723.0, shape: lorentzian, window_nm: 3, fwhm_meV: 8}
-    # optional per peak: min_fwhm_meV (default 0.5), max_fwhm_meV (default 80)
+  peaks:                               # shape: lorentzian | gaussian | voigt | trion
+    # the main exciton of WSe2 (2026-11-04 map, gate grounded). The low-energy band below it
+    # changes from point to point and is not fitted; map it with the report's band integral.
+    - {name: X0, center_nm: 713.6, shape: lorentzian, window_nm: 4.5, fwhm_meV: 6, min_fwhm_meV: 2}
+    # optional per peak: min_fwhm_meV (default 0.5), max_fwhm_meV (default 80),
+    #   window_meV (instead of window_nm), tail_meV / max_tail_meV (trion: start 1, limit 8)
+    # Multi-peak WSe2 example with positions RELATIVE to X0 (offset_meV instead of center_nm; the
+    # pattern is found automatically, and follows every point):
+    # range_nm: null
+    # range_meV: [-62, 15]
+    # peaks:
+    #   - {name: X0,    offset_meV: 0,     shape: voigt,    window_meV: 6,   fwhm_meV: 5, min_fwhm_meV: 1}
+    #   - {name: XT1,   offset_meV: -30,   shape: gaussian, window_meV: 3,   fwhm_meV: 6}
+    #   - {name: XT2,   offset_meV: -36.5, shape: gaussian, window_meV: 3,   fwhm_meV: 5}
+    #   - {name: XD,    offset_meV: -41.5, shape: gaussian, window_meV: 2.5, fwhm_meV: 2.5, min_fwhm_meV: 1, max_fwhm_meV: 5}
+    #   - {name: P1674, offset_meV: -50.5, shape: voigt,    window_meV: 4,   fwhm_meV: 5}
+  combined: []                         # extra maps computed from the fitted peaks at every point
+                                       #   (valid where all peaks involved pass the quality check), e.g.
+    # - {name: XT_X0_height_ratio, ratio: [[XT1, XT2], X0], quantity: height}  # mean(XT1, XT2) / X0
+    # - {name: dE_XT1_X0, difference: [XT1, X0]}   # E(XT1) - E(X0) in meV (default quantity center_meV)
+    # - {name: dE_XT2_X0, difference: [XT2, X0]}
+    # ratio: [A, B] = mean of `quantity` over A / mean over B (default quantity: height);
+    # difference: [A, B] = mean over A - mean over B (default: center_meV). A, B = a peak or a list.
+    # quantity: center_meV | center_nm | height | intensity | fwhm_meV | fwhm_nm | snr | tail_meV
+
+rc:                                    # reflection contrast, RC = (R - R0) / R0  (plmap rc)
+  dark: auto                           # CCD offset: auto (red edge, where the lamp is ~0) | number | file
+  r0: auto                             # background R0: auto (featureless points of the map) |
+                                       #   [loc, loc, ...] points you pick on the map (the report lists
+                                       #   them for you) | path to an R0 spectrum file
+  r0_exposure_s: null                  # R0 file only: its exposure (s); default = map exposure
+  r0_rows_summed: 1                    # R0 file only: saved as a sum over this many CCD rows
+  r0_scale: auto                       # R0 file only: auto = scale to the map's featureless points |
+                                       #   exposure = by exposure ratio only | a number
+  window_nm: null                      # [min, max] around the exciton resonance; null = auto
+  fit: true                            # fit the resonance at every point (complex Lorentzian)
+  min_snr: 5                           # resonance amplitude / residual noise for a "good" fit
+  plots: none                          # per-file RC plots: all | none | list of loc indices
 
 report:
   title: null                          # default: folder name

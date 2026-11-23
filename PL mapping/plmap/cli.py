@@ -1,8 +1,9 @@
 """Command line interface.
 
-    plmap init   [config.yaml]          write a commented config template
-    plmap spectra config.yaml           steps 1-2: averaged spectra, per-file plots, overview map
-    plmap run     config.yaml           steps 1-4: + background, peak fits, results, HTML report
+    plmap init   [config.yaml]          write a commented config template (+ scan.txt next to it)
+    plmap spectra config.yaml           PL steps 1-2: averaged spectra, per-file plots, overview map
+    plmap run     config.yaml           PL steps 1-4: + background, peak fits, results, HTML report
+    plmap rc      config.yaml           reflection-contrast map: RC = (R - R0)/R0, resonance fits, report
     plmap demo   [folder]               make a synthetic map + config to try the pipeline
 
 Re-running is cheap: averaged spectra and per-file plots are cached and only
@@ -21,6 +22,7 @@ from . import background, config, io, plots, spectra
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "config_template.yaml")
+SCAN_TEMPLATE = os.path.join(HERE, "scan_template.txt")
 
 
 class Log:
@@ -93,7 +95,17 @@ def cmd_init(path):
     if os.path.exists(path):
         sys.exit(f"{path} already exists")
     shutil.copy(TEMPLATE, path)
-    print(f"wrote {path} -- edit data.folder, data.wavelength_file and the scan section")
+    print(f"wrote {path} -- edit data.folder and data.wavelength_file")
+    scan = os.path.join(os.path.dirname(os.path.abspath(path)), "scan.txt")
+    if not os.path.exists(scan):
+        shutil.copy(SCAN_TEMPLATE, scan)
+        print(f"wrote {scan} -- copy the scan parameters into it and move it into the map folder "
+              "(or point scan.file in the config to it)")
+
+
+def cmd_rc(cfg, log):
+    from . import rc
+    rc.run(cfg, log)
 
 
 def cmd_demo(folder):
@@ -108,7 +120,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init", help="write a config template")
     p.add_argument("config", nargs="?", default="config.yaml")
-    for name, h in (("spectra", "steps 1-2 (needs only numpy + matplotlib)"), ("run", "steps 1-4")):
+    for name, h in (("spectra", "PL steps 1-2 (needs only numpy + matplotlib)"), ("run", "PL steps 1-4"),
+                    ("rc", "reflection-contrast map")):
         p = sub.add_parser(name, help=h)
         p.add_argument("config")
     p = sub.add_parser("demo", help="make a synthetic dataset to try the pipeline")
@@ -121,7 +134,7 @@ def main(argv=None):
     cfg = config.load(a.config)
     log = Log(os.path.join(cfg["data"]["output"], "plmap_log.txt"))
     t0 = time.time()
-    {"spectra": cmd_spectra, "run": cmd_run}[a.cmd](cfg, log)
+    {"spectra": cmd_spectra, "run": cmd_run, "rc": cmd_rc}[a.cmd](cfg, log)
     log(f"({time.time() - t0:.0f} s)")
 
 

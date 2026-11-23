@@ -20,7 +20,7 @@ plmap = "plmap.cli:main"
 packages = ["plmap"]
 
 [tool.setuptools.package-data]
-plmap = ["config_template.yaml"]
+plmap = ["config_template.yaml", "scan_template.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

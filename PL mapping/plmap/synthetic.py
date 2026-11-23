@@ -88,9 +88,9 @@ scan:
 spectra:
   plots: all
 fit:
-  range_nm: [700, 760]
+  range_nm: null   # auto: around the main exciton
   baseline: linear
-  peaks: []        # empty -> auto-detect; then copy the printed list here and edit shapes
+  peaks: []        # empty -> auto-detect X0; then copy the printed line here and edit its shape
 """
 
 
@@ -100,3 +100,43 @@ def make_demo(folder, x_steps=20, y_steps=16):
     with open(path, "w") as fh:
         fh.write(DEMO_CONFIG.format(xs=x_steps, ys=y_steps))
     return path
+
+
+def make_rc_map(folder, x_steps=12, y_steps=10, nrow=4, exposure=5.0, seed=2):
+    """Reflection-contrast map in the real format (2048 lines x 4 CCD rows): a lamp
+    spectrum falling to ~0 at the red end, a flake band whose exciton gives a
+    dispersive RC feature (complex Lorentzian with phase), a second background region
+    with 15 % lower reflectance, and an R0 file (2048 columns x 4 rows, different
+    exposure). Writes scan.txt with exposure_s. Returns (wl, truth)."""
+    from .rc import model
+    rng = np.random.default_rng(seed)
+    os.makedirs(folder, exist_ok=True)
+    wl = wavelength_axis()
+    E = HC / wl
+    nx, ny = x_steps + 1, y_steps + 1
+    with open(os.path.join(folder, "wavelength.txt"), "w", newline="") as fh:
+        fh.write("".join(f"{v:.6g}\r\n" for v in wl))
+    with open(os.path.join(folder, "scan.txt"), "w") as fh:
+        fh.write(f"start_1_mm 3.108\nend_1_mm {3.108 + 0.0005 * x_steps:.4f}\npoints_1 {nx}\n"
+                 f"start_2_mm -7.9785\nend_2_mm {-7.9785 + 0.0005 * y_steps:.4f}\npoints_2 {ny}\n"
+                 f"exposure_s {exposure}\n")
+    lamp = 160 * np.exp(-((wl - 690) / 38) ** 2) + 2                  # counts/s per row, ~0 at the red end
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    band = (np.abs((xx - nx / 2) - 0.6 * (yy - ny / 2)) < 2.2).ravel()
+    lower = ((xx < 2) & (yy > ny - 4)).ravel()                       # darker background corner
+    e0 = 1.7365 + 0.003 * (yy / ny - 0.5).ravel()
+    g = 0.0065 + 0.001 * (xx / nx).ravel()
+    A, phi = 0.8, np.radians(10)
+    dark = 805.0
+    truth = {"nx": nx, "ny": ny, "band": band, "E0": e0, "G": g, "A": A, "phi": phi, "lower": lower}
+    for i in range(nx * ny):
+        rc = 0.0
+        if band[i]:
+            rc = model(E, e0[i], g[i], A * np.cos(phi), -A * np.sin(phi), 0.05, 0.0)
+        refl = lamp * (1 + rc) * (0.85 if lower[i] else 1.0) * exposure
+        frame = dark + refl[:, None] + rng.normal(0, 3.0, (len(wl), nrow))
+        np.savetxt(os.path.join(folder, f"1_loc{i + 1}.txt"), np.round(frame).astype(int), fmt="%d",
+                   delimiter="\t", newline="\r\n")
+    r0 = dark + lamp[None, :] * 4.0 * 1.3 + rng.normal(0, 3.0, (nrow, len(wl)))    # 4 s, lamp 30 % brighter
+    np.savetxt(os.path.join(folder, "R0_2D.txt"), np.round(r0).astype(int), fmt="%d", delimiter="\t")
+    return wl, truth

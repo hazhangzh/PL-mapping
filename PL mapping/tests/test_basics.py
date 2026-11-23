@@ -19,7 +19,7 @@ def test_grid_steps_and_raster():
 def test_grid_reversed_axis():
     g = ScanGrid(0.30, 0.26, 4, 0, 0.002, 2, "mm")
     assert g.stage_xy(2)[0] == pytest.approx(0.29)
-    assert g.x_rel_um()[1] == pytest.approx(10.0)
+    assert g.x_rel_um()[1] == pytest.approx(-10.0)          # pure translation: start at 0
 
 
 def test_load_matrix_crlf_and_dropped_pixel(tmp_path):
@@ -78,3 +78,53 @@ def test_voigt_matches_scipy():
         s = fg / (2 * np.sqrt(2 * np.log(2)))
         ref = voigt_profile(x - 1.7, s, fl / 2)
         assert np.max(np.abs(ls.voigt(x, 1.7, 1.0, fg, fl) - ref)) < 1e-6 * ref.max()
+
+
+def _edge_map(pl_at_red, n=400, rng=None):
+    """Map with drifting CCD offset (sloped across the chip), 20 on-flake points
+    whose PL tail optionally reaches into the red edge."""
+    rng = rng or np.random.default_rng(1)
+    wl = np.linspace(691.6, 768.0, 2048)
+    drift = rng.normal(0, 4, n)[:, None]
+    sp = 820 + drift - 0.03 * (wl - 700) + rng.normal(0, 0.9, (n, len(wl)))
+    peak = 10 * np.exp(-0.5 * ((wl - 735) / (12 if pl_at_red else 5)) ** 2)
+    sp[:20] += peak
+    return wl, sp, np.ones(n, bool)
+
+
+@pytest.mark.parametrize("pl_at_red,expect", [(True, "blue"), (False, "red")])
+def test_offset_band_avoids_pl_tail(pl_at_red, expect):
+    from plmap import background
+    wl, sp, present = _edge_map(pl_at_red)
+    m = background.choose_offset_band(wl, sp, present, log=lambda *_: None)
+    assert (wl[m].mean() < 700) == (expect == "blue")
+
+
+def test_bright_points_only_on_flake():
+    from plmap import background
+    rng = np.random.default_rng(2)
+    tot = rng.normal(0, 100, 1681)
+    tot[:70] += 5000                                     # 70 on-flake points out of 1681
+    b = background.bright_points(tot, np.ones(1681, bool))
+    assert set(b) == set(range(70))
+    flat = rng.normal(5000, 100, 300)                    # whole map on the flake: top 10 %
+    assert len(background.bright_points(flat, np.ones(300, bool))) == 30
+
+
+def test_detect_peaks_widths():
+    from plmap import fitting
+    wl = np.linspace(700, 760, 1600)
+    E = HC / wl
+    y = sum(h * ls.evaluate("lorentzian", E, [HC / c, 1.0, f]) / ls.height("lorentzian", [HC / c, 1.0, f])
+            for c, f, h in [(713.6, 0.006, 10), (728.5, 0.015, 12), (736.0, 0.012, 14)])
+    y = y + np.random.default_rng(3).normal(0, 0.2, len(wl))
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                   # used to warn "prominence of 0"
+        peaks = fitting.detect_peaks(wl, y, 4, log=lambda *_: None)
+    assert [round(p["center_nm"]) for p in peaks] == [714, 728, 736]
+    # widths only seed the mean-spectrum fit; overlapping peaks read narrow, but
+    # they must not collapse to the 1 meV clip as they did before
+    assert peaks[0]["fwhm_meV"] == pytest.approx(6, rel=0.25)
+    for p in peaks:
+        assert p["fwhm_meV"] > 3 and p["window_nm"] > 2.0

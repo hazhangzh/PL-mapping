@@ -5,3 +5,4 @@ __pycache__/
 build/
 plmap_output/
 plmap_demo/
+.venv/

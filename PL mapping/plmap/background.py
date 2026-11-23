@@ -3,6 +3,7 @@
 Applied in this order (each optional):
   1. dark spectrum            (background.dark_file)
   2. per-point offset         mean of a signal-free band; removes CCD offset and drift
+                              (default: whichever 8-nm spectral edge carries less PL)
   3. substrate background     mean spectrum of the dimmest (off-flake) points, or a file
 A constant/linear baseline is additionally fitted per pixel (fit.baseline).
 """
@@ -35,12 +36,64 @@ def load_spectrum(path, wl):
     raise SystemExit(f"Don't understand the format of {path} (shape {a.shape})")
 
 
-def offset_mask(cfg, wl):
+EDGE_NM = 8.0
+
+
+def bright_points(tot, present, max_frac=0.1, nsig=8.0):
+    """Indices of points whose integrated signal `tot` stands clearly above the
+    scatter of the map (most points are off-flake), brightest first.
+    At least 3 and at most `max_frac` of the present points. If almost nothing
+    stands out (e.g. the whole map is on the flake), the top `max_frac` are used."""
+    t = np.where(present, tot, np.nan)
+    ok = np.flatnonzero(np.isfinite(t))
+    order = ok[np.argsort(t[ok])[::-1]]
+    nmax = max(3, int(max_frac * len(ok)))
+    med = np.median(t[ok])
+    sig = 1.4826 * np.median(np.abs(t[ok] - med))
+    n = int(np.sum(t[ok] > med + nsig * sig)) if sig > 0 else 0
+    if n < 3:
+        n = nmax
+    return order[:min(max(n, 3), nmax)]
+
+
+def _edge_masks(wl):
+    return {"blue": wl <= wl.min() + EDGE_NM, "red": wl >= wl.max() - EDGE_NM}
+
+
+def choose_offset_band(wl, spectra, present, log=print):
+    """Pick the spectral edge (blue or red, EDGE_NM wide) that carries less PL.
+
+    The CCD offset drifts between points, but it shifts both edges equally,
+    so the red-minus-blue difference is drift-free. On off-flake points it is
+    the fixed slope of the CCD offset; on bright points PL in one edge band
+    moves it up (red has PL) or down (blue has PL)."""
+    m = _edge_masks(wl)
+    S = spectra[present]
+    b, r = S[:, m["blue"]].mean(1), S[:, m["red"]].mean(1)
+    mid = S[:, ~(m["blue"] | m["red"])].mean(1) - 0.5 * (b + r)
+    order = np.argsort(mid)
+    nb = max(3, int(0.05 * len(S)))
+    d = r - b
+    bright, dim = d[order[-nb:]], d[order[:len(S) // 2]]
+    diff = np.median(bright) - np.median(dim)
+    err = 1.4826 * np.median(np.abs(dim - np.median(dim))) * 1.25 / np.sqrt(nb)
+    if abs(diff) < 3 * err:
+        side, why = "red", "no PL detected at either edge"
+    else:
+        side = "blue" if diff > 0 else "red"
+        why = f"{'red' if diff > 0 else 'blue'} edge carries {abs(diff):.2f} counts of PL on the brightest points"
+    log(f"offset band: {side} edge ({why}; set background.offset_region_nm to override)")
+    return m[side]
+
+
+def offset_mask(cfg, wl, spectra=None, present=None, log=print):
     reg = cfg["background"]["offset_region_nm"]
     if reg in ("none", False):
         return None
-    if reg is None:
-        reg = [wl.max() - 8.0, wl.max() + 1.0]
+    if reg in (None, "auto"):
+        if spectra is None:
+            return _edge_masks(wl)["red"]
+        return choose_offset_band(wl, spectra, present, log)
     m = (wl >= min(reg)) & (wl <= max(reg))
     if m.sum() < 5:
         raise SystemExit(f"background.offset_region_nm {reg} contains fewer than 5 spectral points")
@@ -56,7 +109,7 @@ def subtract(cfg, wl, spectra, present, fit_mask, log=print):
         info["dark"] = load_spectrum(bc["dark_file"], wl)
         sp -= info["dark"]
         log(f"subtracted dark spectrum {os.path.basename(bc['dark_file'])}")
-    om = offset_mask(cfg, wl)
+    om = offset_mask(cfg, wl, sp, present, log)
     if om is not None:
         with np.errstate(all="ignore"):
             info["offset"] = np.where(present, np.nanmean(np.where(present[:, None], sp[:, om], 0.0), 1), np.nan)

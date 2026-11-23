@@ -65,13 +65,15 @@ def fit_plots(outdir, wl, spc, fit, ks, grid, prefix, dpi=100, log=print):
         return
     plt = _mpl()
     os.makedirs(outdir, exist_ok=True)
-    m, fm = fit["model"], fit["fit_mask"]
-    E = HC / wl[fm]
+    m = fit["model"]
+    res = fit["res"]
     for k in ks:
         i = k - 1
         th = fit["theta"][i]
         if not np.all(np.isfinite(th)):
             continue
+        fm = (wl >= res["range_lo_nm"][i] - 1e-9) & (wl <= res["range_hi_nm"][i] + 1e-9)   # this point's range
+        E = HC / wl[fm]
         fig, (ax, axr) = plt.subplots(2, 1, figsize=(6.4, 4.4), sharex=True,
                                       gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05})
         y = spc[i, fm]
@@ -84,7 +86,7 @@ def fit_plots(outdir, wl, spc, fit, ks, grid, prefix, dpi=100, log=print):
         axr.axhline(0, color="0.6", lw=0.5)
         ax.legend(fontsize=7, frameon=False)
         r, c = grid.rowcol(k)
-        ax.set_title(f"{prefix}_loc{k}  (row {r}, col {c})", fontsize=9)
+        ax.set_title(f"{prefix}_loc{k}  (row {r}, col {c}), shift {res['shift_meV'][i]:+.1f} meV", fontsize=9)
         ax.set_ylabel("Counts", fontsize=8)
         axr.set_ylabel("resid.", fontsize=8)
         axr.set_xlabel("Wavelength (nm)", fontsize=8)
@@ -99,7 +101,8 @@ def summary(path_base, wl, grid, fit, flip_x=False, title=""):
     peaks, res = fit["peaks"], fit["res"]
     ny, nx = grid.ny, grid.nx
     ext = _extent(grid)
-    nrow = 1 + len(peaks)
+    combos = fit.get("combined", [])
+    nrow = 1 + len(peaks) + (len(combos) + 2) // 3
     fig = plt.figure(figsize=(12, 3.4 * nrow + 0.6), layout="constrained")
     gs = fig.add_gridspec(nrow, 3)
 
@@ -142,6 +145,9 @@ def summary(path_base, wl, grid, fit, flip_x=False, title=""):
         show(fig.add_subplot(gs[j, 0]), res[f"{n}_intensity"], f"{n} integrated intensity (counts)", "magma", ok)
         show(fig.add_subplot(gs[j, 1]), res[f"{n}_center_meV"], f"{n} peak energy (meV)", "coolwarm", ok)
         show(fig.add_subplot(gs[j, 2]), res[f"{n}_fwhm_meV"], f"{n} FWHM (meV)", "viridis", ok)
+    for j, c in enumerate(combos):
+        show(fig.add_subplot(gs[1 + len(peaks) + j // 3, j % 3]), res[c["name"]], c["label"],
+             "viridis" if c["kind"] == "ratio" else "coolwarm", res[c["name"] + "_ok"])
     fig.suptitle(title, fontsize=11)
     fig.supxlabel("Grey = no data, or the fit failed the quality check (SNR, parameter at a bound).",
                   fontsize=8, color="0.3")
@@ -169,10 +175,13 @@ def overview(path, wl, spc, grid, flip_x=False, title=""):
     ax.set_xlabel("x (µm)" + (" ← flipped" if flip_x else ""), fontsize=8)
     ax.set_ylabel("y (µm)", fontsize=8)
     ax.tick_params(labelsize=7)
-    order = np.argsort(np.where(np.isfinite(tot), tot, -np.inf))[::-1]
-    nb = max(3, int(0.1 * np.isfinite(tot).sum()))
-    ax2.plot(wl, np.nanmean(spc[order[:nb]], 0), color="#d62728", lw=0.9, label=f"mean of {nb} brightest points")
-    ax2.plot(wl, np.nanmean(spc[order[-nb:]], 0), color="#b8860b", lw=0.9, label=f"mean of {nb} dimmest points")
+    from .background import bright_points
+    fin_pts = np.isfinite(tot)
+    br = bright_points(tot, fin_pts)
+    order = np.argsort(np.where(fin_pts, tot, np.inf))
+    dim = order[:max(len(br), int(0.3 * fin_pts.sum()))]
+    ax2.plot(wl, np.nanmean(spc[br], 0), color="#d62728", lw=0.9, label=f"mean of {len(br)} brightest points")
+    ax2.plot(wl, np.nanmean(spc[dim], 0), color="#b8860b", lw=0.9, label=f"mean of {len(dim)} dimmest points")
     ax2.axhline(0, color="0.6", lw=0.5)
     ax2.set_xlim(wl.min(), wl.max())
     ax2.set_xlabel("Wavelength (nm)", fontsize=8)
@@ -186,5 +195,6 @@ def overview(path, wl, spc, grid, flip_x=False, title=""):
 
 
 def _extent(grid):
-    dx, dy = abs(grid.x_step) * grid.to_um or 1.0, abs(grid.y_step) * grid.to_um or 1.0
+    """imshow extent in µm relative to the scan start (row 0 drawn at the top)."""
+    dx, dy = grid.x_step * grid.to_um or 1.0, grid.y_step * grid.to_um or 1.0
     return [-0.5 * dx, (grid.nx - 0.5) * dx, (grid.ny - 0.5) * dy, -0.5 * dy]

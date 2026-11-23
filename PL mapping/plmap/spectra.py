@@ -6,6 +6,7 @@ rays. Needs only numpy (runs on the lab computer).
 """
 import hashlib
 import os
+import warnings
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -53,7 +54,8 @@ def average_rows(a, cr_sigma=6.0, k=3, floor=1.0):
     r = a - smooth
     hit = r > cr_sigma * _robust_sigma(r, 0, floor)
     cr = hit | np.roll(hit, 1, 0) | np.roll(hit, -1, 0)
-    with np.errstate(all="ignore"):
+    with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)   # lines with every row rejected -> handled below
         sp = np.where(cr, np.nan, a)
         out = np.nanmean(sp, 1)
     allbad = np.isnan(out)
